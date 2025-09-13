@@ -25,7 +25,8 @@
     "unlimitedStorage",
     "webNavigation",
     "system.display",
-    "scripting"
+    "scripting",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "http://*/*",
