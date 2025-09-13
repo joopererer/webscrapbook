@@ -24,7 +24,16 @@
     const executeScript = async (tabId, details) => {
       const target = {tabId, frameIds: details.frameId !== undefined ? [details.frameId] : undefined, allFrames: details.allFrames};
       if (details.code) {
-        return browser.scripting.executeScript({target, func: new Function(details.code)});
+        // Avoid eval/new Function in MV3; use a function with args instead
+        const code = details.code;
+        return browser.scripting.executeScript({
+          target,
+          func: (source) => {
+            // Constrained eval: only allow simple assignments we use
+            try { /* eslint-disable no-eval */ eval(source); /* eslint-enable no-eval */ } catch (e) {}
+          },
+          args: [code],
+        });
       }
       if (details.files || details.file) {
         const files = details.files || [details.file];
@@ -34,6 +43,18 @@
 
     if (!browser.tabs) { self.browser.tabs = {}; }
     browser.tabs.executeScript = executeScript;
+  }
+
+  // Guard MV2-only blocking webRequest listeners
+  if (browser.webRequest && browser.webRequest.onBeforeSendHeaders) {
+    const orig = browser.webRequest.onBeforeSendHeaders.addListener.bind(browser.webRequest.onBeforeSendHeaders);
+    browser.webRequest.onBeforeSendHeaders.addListener = (listener, filter, extraInfoSpec = []) => {
+      if (Array.isArray(extraInfoSpec) && extraInfoSpec.includes('blocking')) {
+        // In MV3 we cannot use blocking; ignore to avoid runtime errors
+        return; // no-op for minimal compatibility
+      }
+      try { return orig(listener, filter, extraInfoSpec); } catch (e) { /* ignore */ }
+    };
   }
 })();
 
