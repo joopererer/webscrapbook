@@ -498,14 +498,15 @@
       const spoof = options["capture.referrerSpoofSource"];
       const referrer = new Referrer(refUrl, targetUrl, policy, spoof).toString();
 
+      // For XHR path (file:// or legacy), we will use a placeholder header
+      // that used to be rewritten by webRequest (MV2). In MV3 we avoid
+      // depending on that and prefer fetch() with referrer options.
+      const xhrHeaders = Object.assign({}, headers);
       if (referrer) {
-        // Browser does not allow assigning "Referer" header directly.
-        // Set a placeholder header, whose prefix will be removed by the
-        // listener of browser.webRequest.onBeforeSendHeaders later on.
-        headers["X-WebScrapBook-Referer"] = referrer;
+        xhrHeaders["X-WebScrapBook-Referer"] = referrer;
       }
 
-      return headers;
+      return {headers: xhrHeaders, referrer, referrerPolicy: policy};
     };
 
     const setCache = async (id, token, data) => {
@@ -635,17 +636,108 @@
             overrideUrl = URL.createObjectURL(overrideBlob);
           }
 
+          // Prefer fetch() for http/https to support referrer settings in MV3
+          if ((scheme === "http" || scheme === "https") && !overrideUrl) {
+            const {headers: xhrHeadersIgnored, referrer: reqReferrer, referrerPolicy: reqRefPolicy} = setReferrer({
+              headers: {},
+              refUrl,
+              targetUrl: sourceUrlMain,
+              refPolicy,
+              options,
+            });
+
+            try {
+              const init = {
+                method: headerOnly ? 'HEAD' : 'GET',
+                redirect: 'follow',
+                credentials: 'include',
+                referrer: reqReferrer || 'about:client',
+                referrerPolicy: reqRefPolicy,
+              };
+              const res = await fetch(sourceUrlMain, init);
+
+              // headers
+              const headerContentType = res.headers.get("Content-Type");
+              if (headerContentType) {
+                const contentType = scrapbook.parseHeaderContentType(headerContentType);
+                headers.contentType = contentType.type;
+                headers.charset = contentType.parameters.charset;
+              }
+              const headerContentDisposition = res.headers.get("Content-Disposition");
+              if (headerContentDisposition) {
+                const contentDisposition = scrapbook.parseHeaderContentDisposition(headerContentDisposition);
+                headers.isAttachment = (contentDisposition.type !== "inline");
+                headers.filename = contentDisposition.parameters.filename;
+              }
+              const headerContentLength = res.headers.get("Content-Length");
+              if (headerContentLength) {
+                headers.contentLength = parseInt(headerContentLength, 10);
+              }
+
+              if (headerOnly) {
+                return Object.assign(response, {
+                  url: res.url,
+                  status: res.status,
+                });
+              }
+
+              let blob = await res.blob();
+              if (capturer.captureInfo.get(timeId).useDiskCache) {
+                blob = await setCache(timeId, fetchToken, blob);
+              }
+
+              Object.assign(response, {
+                url: res.url,
+                status: res.status,
+                blob,
+              });
+
+              // apply size limit
+              if (!ignoreSizeLimit &&
+                  typeof options["capture.resourceSizeLimit"] === "number" &&
+                  blob.size >= options["capture.resourceSizeLimit"] * 1024 * 1024) {
+                Object.assign(response, {
+                  blob: null,
+                  error: {
+                    name: 'FilterSizeError',
+                    message: 'Resource size limit exceeded.',
+                  },
+                });
+              }
+
+              if (!(res.status >= 200 && res.status < 300)) {
+                Object.assign(response, {
+                  error: {
+                    name: 'HttpError',
+                    message: `${res.status} ${res.statusText}`,
+                  },
+                });
+              }
+
+              return response;
+            } catch (ex) {
+              return Object.assign(response, {
+                error: {
+                  name: 'RequestError',
+                  message: ex.message,
+                },
+              });
+            }
+          }
+
+          const {headers: requestHeaders} = setReferrer({
+            headers: {},
+            refUrl,
+            targetUrl: overrideUrl || sourceUrlMain,
+            refPolicy,
+            options,
+          });
+
           const xhr = await scrapbook.xhr({
             url: overrideUrl || sourceUrlMain,
             responseType: 'blob',
             allowAnyStatus: true,
-            requestHeaders: setReferrer({
-              headers: {},
-              refUrl,
-              targetUrl: overrideUrl || sourceUrlMain,
-              refPolicy,
-              options,
-            }),
+            requestHeaders,
             onreadystatechange(xhr) {
               if (xhr.readyState !== 2) { return; }
 
