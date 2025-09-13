@@ -459,6 +459,35 @@ if (typeof Promise.withResolvers === 'undefined') {
     "/editor/content.js",
   ];
 
+  /**
+   * Execute script in a tab/frame with MV3 compatibility.
+   * Prefer browser.scripting when available.
+   */
+  scrapbook.executeScript = async function (tabId, details) {
+    if (browser.scripting && browser.scripting.executeScript) {
+      const target = {
+        tabId,
+        frameIds: Number.isInteger(details.frameId) ? [details.frameId] : undefined,
+        allFrames: details.allFrames,
+      };
+      if (details.file || details.files) {
+        const files = details.files || [details.file];
+        return await browser.scripting.executeScript({target, files});
+      }
+      if (details.code) {
+        const code = details.code;
+        return await browser.scripting.executeScript({
+          target,
+          func: (source) => { try { /* eslint-disable no-eval */ eval(source); /* eslint-enable no-eval */ } catch (e) {} },
+          args: [code],
+        });
+      }
+      return;
+    }
+    // Fallback to MV2 API (Firefox)
+    return await browser.tabs.executeScript(tabId, details);
+  };
+
   const HTTP_STATUS_TEXT = {
     // 1××: Informational
     100: "Continue",
@@ -1455,9 +1484,9 @@ if (typeof Promise.withResolvers === 'undefined') {
             isDebug && console.debug("inject content scripts", tabId, frameId, url);
             try {
               for (const file of CONTENT_SCRIPT_FILES) {
-                await browser.tabs.executeScript(tabId, {frameId, file, runAt: "document_start"});
+                await scrapbook.executeScript(tabId, {frameId, file, runAt: "document_start"});
               }
-              await browser.tabs.executeScript(tabId, {frameId, code: `core.frameId = ${frameId};`, runAt: "document_start"});
+              await scrapbook.executeScript(tabId, {frameId, code: `core.frameId = ${frameId};`, runAt: "document_start"});
             } catch (ex) {
               // Chromium may fail to inject content script to some pages due to unclear reason.
               // Record the error and pass.

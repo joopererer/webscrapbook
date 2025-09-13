@@ -337,7 +337,7 @@
       const response = await scrapbook.invokeContentScript({
         tabId, frameId, cmd, args,
       });
-      await browser.tabs.executeScript(tabId, {
+      await scrapbook.executeScript(tabId, {
         frameId,
         code: `window.focus();`,
         runAt: "document_start",
